@@ -1,6 +1,5 @@
 // language: JavaScript (Node.js), file: server.js, target: Render web service
 // Forges/stores ROBLOSECURITY cookies, validates them against Roblox API.
-// Render supplies PORT via env; bind 0.0.0.0 so the proxy reaches it.
 
 const express = require('express');
 const axios = require('axios');
@@ -11,7 +10,6 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// In-memory store. Cleared on restart/redeploy. Swap for sqlite or Redis if persistence needed.
 const forgedPasskeys = new Map();
 
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -24,12 +22,17 @@ app.post('/api/forge', (req, res) => {
     if (!cookie || typeof cookie !== 'string') {
         return res.status(400).json({ error: 'Missing .ROBLOSECURITY cookie' });
     }
-    if (!/^[A-Z0-9_]+$/i.test(cookie) || cookie.length < 50) {
-        return res.status(400).json({ error: 'Invalid cookie format' });
+
+    // Strip newlines/spaces that occur during copy-paste
+    const cleanCookie = cookie.replace(/[\r\n\s]/g, '');
+
+    // Roblox cookies are long and include the warning prefix. Check minimum length.
+    if (cleanCookie.length < 50) {
+        return res.status(400).json({ error: 'Invalid cookie format (too short)' });
     }
 
     const passkeyId = 'pk_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
-    forgedPasskeys.set(passkeyId, { cookie, json: null, createdAt: new Date().toISOString() });
+    forgedPasskeys.set(passkeyId, { cookie: cleanCookie, json: null, createdAt: new Date().toISOString() });
 
     res.json({ success: true, passkeyId, message: 'Passkey forged. Use Login to validate.' });
 });
@@ -53,7 +56,7 @@ app.post('/api/login', async (req, res) => {
 
         const csrfToken = authResp.headers['x-csrf-token'];
         if (!csrfToken) {
-            return res.status(401).json({ error: 'Failed to obtain CSRF token. Cookie may be invalid.' });
+            return res.status(401).json({ error: 'Failed to obtain CSRF token. Cookie may be invalid or expired.' });
         }
 
         const userResp = await axios.get('https://users.roblox.com/v1/users/authenticated', {
@@ -96,7 +99,7 @@ app.put('/api/passkey/:id', (req, res) => {
     const entry = forgedPasskeys.get(req.params.id);
     if (!entry) return res.status(404).json({ error: 'Passkey not found' });
     const { cookie } = req.body;
-    if (cookie) entry.cookie = cookie;
+    if (cookie) entry.cookie = cookie.replace(/[\r\n\s]/g, '');
     res.json({ success: true });
 });
 
