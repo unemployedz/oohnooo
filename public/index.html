@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Passkey Forge</title>
+    <style>
+        body { background:#0d0d0d; color:#d0d0d0; font-family:ui-monospace,Menlo,Consolas,monospace; margin:0; }
+        main { max-width:640px; margin:48px auto; padding:0 16px; }
+        h1 { font-size:16px; font-weight:500; letter-spacing:0.08em; border-bottom:1px solid #333; padding-bottom:12px; }
+        section { margin:24px 0; }
+        label { display:block; font-size:12px; color:#888; margin:8px 0 4px; text-transform:uppercase; letter-spacing:0.05em; }
+        input { width:100%; box-sizing:border-box; background:#151515; border:1px solid #333; color:#d0d0d0;
+                padding:8px; font-family:inherit; font-size:13px; }
+        button { background:#151515; border:1px solid #333; color:#d0d0d0; padding:8px 14px; font-family:inherit;
+                 font-size:13px; cursor:pointer; margin-top:8px; }
+        button:hover { border-color:#777; }
+        pre { background:#111; border:1px solid #222; padding:12px; font-size:12px; overflow-x:auto;
+              white-space:pre-wrap; word-break:break-all; }
+        .row { display:flex; gap:8px; }
+        .row > * { flex:1; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>PASSKEY FORGE</h1>
+
+    <section>
+        <label>Forge new passkey</label>
+        <input id="forge-cookie" type="text" placeholder=".ROBLOSECURITY value">
+        <button onclick="forge()">Forge</button>
+    </section>
+
+    <section>
+        <label>Login with forged passkey</label>
+        <div class="row">
+            <input id="login-id" type="text" placeholder="pk_...">
+            <button onclick="login()">Login</button>
+        </div>
+    </section>
+
+    <section>
+        <label>View forged passkey (JSON)</label>
+        <div class="row">
+            <input id="view-id" type="text" placeholder="pk_...">
+            <button onclick="view()">View</button>
+        </div>
+    </section>
+
+    <section>
+        <label>Edit cookie config</label>
+        <div class="row">
+            <input id="edit-id" type="text" placeholder="pk_...">
+            <input id="edit-cookie" type="text" placeholder="new cookie">
+            <button onclick="edit()">Update</button>
+        </div>
+    </section>
+
+    <section>
+        <label>Output</label>
+        <pre id="out">idle</pre>
+    </section>
+</main>
+
+<script>
+    const out = (v) => { document.getElementById('out').textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); };
+    const val = (id) => document.getElementById(id).value.trim();
+
+    async function forge() {
+        const cookie = val('forge-cookie');
+        if (!cookie) return out('cookie required');
+        const r = await fetch('/api/forge', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cookie })
+        });
+        out(await r.json());
+    }
+
+    async function login() {
+        const passkeyId = val('login-id');
+        if (!passkeyId) return out('passkey id required');
+        const r = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ passkeyId })
+        });
+        out(await r.json());
+    }
+
+    async function view() {
+        const passkeyId = val('view-id');
+        if (!passkeyId) return out('passkey id required');
+        const r = await fetch('/api/passkey/' + encodeURIComponent(passkeyId));
+        out(await r.json());
+    }
+
+    async function edit() {
+        const passkeyId = val('edit-id');
+        const cookie = val('edit-cookie');
+        if (!passkeyId || !cookie) return out('passkey id and cookie required');
+        const r = await fetch('/api/passkey/' + encodeURIComponent(passkeyId), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cookie })
+        });
+        out(await r.json());
+    }
+</script>
+</body>
+</html>
