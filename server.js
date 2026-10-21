@@ -22,7 +22,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 function createClient(cookieString) {
     const jar = new CookieJar();
-    // Seed the jar with the provided cookie
     jar.setCookieSync(`.ROBLOSECURITY=${cookieString}; Domain=.roblox.com; Path=/`, 'https://www.roblox.com');
 
     let agent;
@@ -39,7 +38,6 @@ function createClient(cookieString) {
         }
     });
 
-    // Attach cookies from jar to request
     client.interceptors.request.use(async (config) => {
         const url = config.url.startsWith('http') ? config.url : `https://auth.roblox.com${config.url}`;
         const cookieHeader = await jar.getCookieString(url);
@@ -49,7 +47,6 @@ function createClient(cookieString) {
         return config;
     });
 
-    // Save cookies from response (including error responses like 403)
     const saveCookies = (headers, requestUrl) => {
         const setCookies = headers['set-cookie'];
         if (setCookies) {
