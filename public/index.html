@@ -32,10 +32,18 @@
     </section>
 
     <section>
-        <label>Login with forged passkey</label>
+        <label>Login with forged passkey (JSON)</label>
         <div class="row">
             <input id="login-id" type="text" placeholder="pk_...">
             <button onclick="login()">Login</button>
+        </div>
+    </section>
+
+    <section>
+        <label>Login in Browser (Web Session)</label>
+        <div class="row">
+            <input id="browser-login-id" type="text" placeholder="pk_...">
+            <button onclick="browserLogin()">Login Browser</button>
         </div>
     </section>
 
@@ -86,6 +94,14 @@
             body: JSON.stringify({ passkeyId })
         });
         out(await r.json());
+    }
+
+    function browserLogin() {
+        const passkeyId = val('browser-login-id');
+        if (!passkeyId) return out('passkey id required');
+        // Opens a new tab that auto-submits the ticket to Roblox
+        window.open('/api/browser-login/' + encodeURIComponent(passkeyId), '_blank');
+        out('Opened new tab. Redirecting to Roblox...');
     }
 
     async function view() {
